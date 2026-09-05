@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/", "destination": "/motion_light_particles.html" }
+  ]
+}
