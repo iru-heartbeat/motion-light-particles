@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Motion Light Particles</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: #05060f;
+    overflow: hidden;
+    font-family: "Hiragino Sans", "Yu Gothic", "Segoe UI", sans-serif;
+  }
+  canvas#stage {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    cursor: none;
+  }
+  #status {
+    position: fixed;
+    top: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.85);
+    background: rgba(10, 12, 30, 0.55);
+    border: 1px solid rgba(255,255,255,0.15);
+    padding: 10px 20px;
+    border-radius: 999px;
+    font-size: 14px;
+    letter-spacing: 0.02em;
+    pointer-events: none;
+    white-space: nowrap;
+    transition: opacity 0.8s ease;
+  }
+  #status.hidden {
+    opacity: 0;
+  }
+  /* video は画面には表示しない（動き検知の内部処理でのみ使用） */
+  video#cam {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+  #debug {
+    position: fixed;
+    bottom: 16px;
+    left: 16px;
+    color: rgba(255,255,255,0.7);
+    background: rgba(10, 12, 30, 0.55);
+    border: 1px solid rgba(255,255,255,0.15);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    pointer-events: none;
+  }
+  #debug.hidden {
+    display: none;
+  }
+  #panel {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    color: rgba(255,255,255,0.75);
+    background: rgba(10, 12, 30, 0.55);
+    border: 1px solid rgba(255,255,255,0.15);
+    padding: 10px 16px;
+    border-radius: 10px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #panel.hidden {
+    display: none;
+  }
+  #panel input[type="range"] {
+    width: 120px;
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<video id="cam" autoplay playsinline muted></video>
+<div id="status">カメラへのアクセスを準備しています…</div>
+<div id="debug" class="hidden">Step 3: 動き検知セル数 = 0</div>
+<div id="panel" class="hidden">
+  <label for="sensitivity">感度</label>
+  <input id="sensitivity" type="range" min="1" max="100" value="50">
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const canvas = document.getElementById("stage");
+  const ctx = canvas.getContext("2d");
+  const video = document.getElementById("cam");
+  const statusEl = document.getElementById("status");
+  const debugEl = document.getElementById("debug");
+  const panelEl = document.getElementById("panel");
+  const sensitivitySlider = document.getElementById("sensitivity");
+
+  let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ---------------------------------------------------------------
+  // Particle Engine（入力元から独立: spawnParticle(x,y,vx,vy) だけを公開する）
+  // ---------------------------------------------------------------
+  const particles = [];
+  const MAX_PARTICLES = 900;
+
+  function spawnParticle(x, y, boostVx, boostVy) {
+    if (particles.length >= MAX_PARTICLES) particles.shift();
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 0.4 + Math.random() * 1.6;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed + (boostVx || 0) * 0.15,
+      vy: Math.sin(angle) * speed + (boostVy || 0) * 0.15,
+      life: 1,
+      decay: 0.008 + Math.random() * 0.014,
+      size: 1.5 + Math.random() * 3.5,
+      hue: 190 + Math.random() * 140
+    });
+  }
+
+  function spawnBurst(x, y, count, boostVx, boostVy) {
+    for (let i = 0; i < count; i++) spawnParticle(x, y, boostVx, boostVy);
+  }
+
+  function updateAndDrawParticles() {
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgba(5, 6, 15, 0.16)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.97;
+      p.vy *= 0.97;
+      p.life -= p.decay;
+      if (p.life <= 0) {
+        particles.splice(i, 1);
+        continue;
+      }
+      const alpha = Math.max(p.life, 0);
+      const r = p.size * (0.6 + p.life * 0.8);
+      const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 4);
+      grad.addColorStop(0, `hsla(${p.hue}, 95%, 75%, ${alpha})`);
+      grad.addColorStop(0.4, `hsla(${p.hue}, 90%, 60%, ${alpha * 0.5})`);
+      grad.addColorStop(1, `hsla(${p.hue}, 90%, 50%, 0)`);
+      ctx.beginPath();
+      ctx.fillStyle = grad;
+      ctx.arc(p.x, p.y, r * 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function renderLoop() {
+    updateAndDrawParticles();
+    requestAnimationFrame(renderLoop);
+  }
+  requestAnimationFrame(renderLoop);
+
+  // ---------------------------------------------------------------
+  // Step 1 の入力元: マウス/タッチ操作
+  // （カメラモードもこの spawnParticle/spawnBurst を同じ形で呼び出す想定）
+  // ---------------------------------------------------------------
+  let lastMouse = null;
+
+  window.addEventListener("mousemove", (e) => {
+    const x = e.clientX, y = e.clientY;
+    let vx = 0, vy = 0;
+    if (lastMouse) {
+      vx = x - lastMouse.x;
+      vy = y - lastMouse.y;
+    }
+    lastMouse = { x, y };
+    spawnBurst(x, y, 2, vx, vy);
+  });
+
+  window.addEventListener("touchmove", (e) => {
+    const t = e.touches[0];
+    if (!t) return;
+    spawnBurst(t.clientX, t.clientY, 2, 0, 0);
+  }, { passive: true });
+
+  // ---------------------------------------------------------------
+  // Step 2: カメラ許可要求とフォールバック分岐（F-01 / F-05）
+  // ここではまだ動き検知は行わず、許可/拒否でどちらの状態になったかだけを
+  // メッセージで確認する。マウス操作は許可/拒否どちらでも引き続き有効。
+  // ---------------------------------------------------------------
+  let mode = null; // 'camera' | 'mouse'
+
+  function setStatus(text, autoHide) {
+    statusEl.textContent = text;
+    statusEl.classList.remove("hidden");
+    if (autoHide) {
+      clearTimeout(setStatus._t);
+      setStatus._t = setTimeout(() => statusEl.classList.add("hidden"), 3200);
+    }
+  }
+
+  async function initCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("getUserMedia not supported");
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 320 }, height: { ideal: 240 }, facingMode: "user" },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+  }
+
+  async function start() {
+    try {
+      await initCamera();
+      mode = "camera";
+      setStatus("カメラ許可OK（下の数字が動きの検知セル数です。手を振ってみてください）", true);
+      debugEl.classList.remove("hidden");
+      panelEl.classList.remove("hidden");
+      requestAnimationFrame(motionLoop);
+    } catch (err) {
+      mode = "mouse";
+      setStatus("カメラを利用できないため、マウス操作でお楽しみください", true);
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Step 3: 動き検知ロジック（F-02）
+  // まだパーティクルには接続せず、検知結果を画面下の数値表示のみで確認する。
+  // ---------------------------------------------------------------
+  const SAMPLE_W = 160;
+  const SAMPLE_H = 120;
+  const GRID_COLS = 20;
+  const GRID_ROWS = 15;
+  const CELL_W = SAMPLE_W / GRID_COLS;
+  const CELL_H = SAMPLE_H / GRID_ROWS;
+  const DETECT_EVERY_N_FRAMES = 3; // 負荷対策として間引き実行
+
+  // Step 5: 感度調整（F-06）
+  // スライダーの値（1〜100、大きいほど敏感）を、しきい値2つに変換する。
+  // しきい値は小さいほど「動きあり」と判定されやすくなる。
+  let pixelDiffThreshold = 40;
+  let cellRatioThreshold = 0.15;
+
+  function applySensitivity(sliderValue) {
+    pixelDiffThreshold = 70 - (sliderValue / 100) * 55; // 15〜70の範囲
+    cellRatioThreshold = 0.22 - (sliderValue / 100) * 0.16; // 0.06〜0.22の範囲
+  }
+  applySensitivity(Number(sensitivitySlider.value));
+  sensitivitySlider.addEventListener("input", (e) => {
+    applySensitivity(Number(e.target.value));
+  });
+
+  const sampleCanvas = document.createElement("canvas");
+  sampleCanvas.width = SAMPLE_W;
+  sampleCanvas.height = SAMPLE_H;
+  const sampleCtx = sampleCanvas.getContext("2d", { willReadFrequently: true });
+
+  let prevGray = null;
+  let frameCounter = 0;
+
+  function toGrayscale(imageData) {
+    const { data } = imageData;
+    const gray = new Uint8ClampedArray(SAMPLE_W * SAMPLE_H);
+    for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+      gray[j] = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) | 0;
+    }
+    return gray;
+  }
+
+  function detectMotion() {
+    sampleCtx.drawImage(video, 0, 0, SAMPLE_W, SAMPLE_H);
+    const frame = sampleCtx.getImageData(0, 0, SAMPLE_W, SAMPLE_H);
+    const gray = toGrayscale(frame);
+
+    let motionCellCount = 0;
+
+    if (prevGray) {
+      for (let row = 0; row < GRID_ROWS; row++) {
+        for (let col = 0; col < GRID_COLS; col++) {
+          let motionPixels = 0;
+          const totalPixels = CELL_W * CELL_H;
+          const xStart = Math.floor(col * CELL_W);
+          const yStart = Math.floor(row * CELL_H);
+          const xEnd = Math.floor(xStart + CELL_W);
+          const yEnd = Math.floor(yStart + CELL_H);
+
+          for (let y = yStart; y < yEnd; y++) {
+            const rowOffset = y * SAMPLE_W;
+            for (let x = xStart; x < xEnd; x++) {
+              const idx = rowOffset + x;
+              if (Math.abs(gray[idx] - prevGray[idx]) > pixelDiffThreshold) {
+                motionPixels++;
+              }
+            }
+          }
+
+          if (motionPixels / totalPixels > cellRatioThreshold) {
+            motionCellCount++;
+            // Step 4: 検知したセルの中心座標をパーティクル発生に接続（F-03）
+            // 鏡のように自然な操作感になるよう左右反転してマッピングする。
+            const normX = 1 - (col + 0.5) / GRID_COLS;
+            const normY = (row + 0.5) / GRID_ROWS;
+            spawnBurst(normX * W, normY * H, 1);
+          }
+        }
+      }
+    }
+
+    debugEl.textContent = `Step 3: 動き検知セル数 = ${motionCellCount}`;
+    prevGray = gray;
+  }
+
+  function motionLoop() {
+    if (video.readyState >= 2) {
+      frameCounter++;
+      if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
+        detectMotion();
+      }
+    }
+    requestAnimationFrame(motionLoop);
+  }
+
+  start();
+})();
+</script>
+</body>
+</html>
